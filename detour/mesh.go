@@ -239,18 +239,22 @@ func (m *NavMesh) Init(params *NavMeshParams) Status {
 	}
 
 	// Init ID generator values.
-	m.tileBits = math32.Ilog2(math32.NextPow2(uint32(params.MaxTiles)))
-	m.polyBits = math32.Ilog2(math32.NextPow2(uint32(params.MaxPolys)))
-	// Only allow 31 salt bits, since the salt mask is calculated using 32bit uint and it will overflow.
-	if 31 < 32-m.tileBits-m.polyBits {
-		m.saltBits = 31
-	} else {
-		m.saltBits = 32 - m.tileBits - m.polyBits
-	}
+	// m.tileBits = math32.Ilog2(math32.NextPow2(uint32(params.MaxTiles)))
+	// m.polyBits = math32.Ilog2(math32.NextPow2(uint32(params.MaxPolys)))
+	// // Only allow 31 salt bits, since the salt mask is calculated using 32bit uint and it will overflow.
+	// if 31 < 32-m.tileBits-m.polyBits {
+	// 	m.saltBits = 31
+	// } else {
+	// 	m.saltBits = 32 - m.tileBits - m.polyBits
+	// }
 
-	if m.saltBits < 10 {
-		return Status(Failure | InvalidParam)
-	}
+	// if m.saltBits < 10 {
+	// 	return Status(Failure | InvalidParam)
+	// }
+
+	m.polyBits = 31
+	m.tileBits = 21
+	m.saltBits = 12
 
 	return Success
 }
@@ -634,7 +638,7 @@ func (m *NavMesh) encodePolyID(salt, it, ip uint32) PolyRef {
 }
 
 // PolyRef is a polygon reference.
-type PolyRef uint32
+type PolyRef uint64
 
 // Link defines a Link between polygons.
 //

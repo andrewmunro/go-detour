@@ -135,14 +135,14 @@ func (s *MeshTile) unserialize(hdr *MeshHeader, src []byte) {
 	for i := range s.Links {
 		l := &s.Links[i]
 
-		l.Ref = PolyRef(little.Uint32(src[off:]))
-		l.Next = little.Uint32(src[off+4:])
+		l.Ref = PolyRef(little.Uint64(src[off:]))
+		l.Next = little.Uint32(src[off+4+4:])
 
-		l.Edge = src[off+8]
-		l.Side = src[off+9]
-		l.BMin = src[off+10]
-		l.BMax = src[off+11]
-		off += 12
+		l.Edge = src[off+4+8]
+		l.Side = src[off+4+9]
+		l.BMin = src[off+4+10]
+		l.BMax = src[off+4+11]
+		off += 12 + 4
 	}
 
 	s.DetailMeshes = make([]PolyDetail, hdr.DetailMeshCount)
