@@ -63,8 +63,9 @@ type MMTileHeader struct {
 }
 
 var (
-	start = d3.Vec3{-8921.09, -119.135, 82.195}
-	end   = d3.Vec3{-9448.55, 68.236, 56.3225}
+	start    = FromWowCoords(d3.Vec3{-8921.09, -119.135, 82.195})
+	end      = FromWowCoords(d3.Vec3{-9448.55, 68.236, 56.3225})
+	maxPolys = 256
 )
 
 type Nav struct {
@@ -88,27 +89,12 @@ type PathRequest struct {
 func main() {
 	nav := NewNav("mmaps/", "000")
 
-	fmt.Println(nav.GetPath(start, end))
+	fmt.Println(nav.GetStraightPath(start, end))
 
 	r := mux.NewRouter()
-	r.HandleFunc("/path", func(w http.ResponseWriter, r *http.Request) {
-		var req PathRequest
-		err := json.NewDecoder(r.Body).Decode(&req)
-		if err != nil {
-			w.WriteHeader(400)
-			w.Write([]byte(fmt.Sprintf(`{"error": "%s"}`, err)))
-			return
-		}
+	r.HandleFunc("/path", nav.HandleGetPath).Methods("POST")
+	r.HandleFunc("/closest", nav.HandleGetClosestPoints).Methods("POST")
 
-		path := nav.GetPath(Vector3ToVec3(req.Start), Vector3ToVec3(req.End))
-
-		vecs := make([]Vector3, len(path))
-		for i, vec := range path {
-			vecs[i] = Vec3ToVector3(vec)
-		}
-
-		json.NewEncoder(w).Encode(vecs)
-	}).Methods("POST")
 	http.Handle("/", r)
 
 	srv := &http.Server{
@@ -116,6 +102,48 @@ func main() {
 		Handler: r,
 	}
 	srv.ListenAndServe()
+}
+
+func (n *Nav) HandleGetPath(w http.ResponseWriter, r *http.Request) {
+	var req PathRequest
+	err := json.NewDecoder(r.Body).Decode(&req)
+	if err != nil {
+		w.WriteHeader(400)
+		w.Write([]byte(fmt.Sprintf(`{"error": "%s"}`, err)))
+		return
+	}
+
+	start := FromWowCoords(Vector3ToVec3(req.Start))
+	end := FromWowCoords(Vector3ToVec3(req.End))
+
+	path := n.GetStraightPath(start, end)
+
+	vecs := make([]Vector3, len(path))
+	for i, vec := range path {
+		vecs[i] = Vec3ToVector3(ToWowCoords(vec))
+	}
+
+	json.NewEncoder(w).Encode(vecs)
+}
+
+func (n *Nav) HandleGetClosestPoints(w http.ResponseWriter, r *http.Request) {
+	var req []Vector3
+	err := json.NewDecoder(r.Body).Decode(&req)
+	if err != nil {
+		w.WriteHeader(400)
+		w.Write([]byte(fmt.Sprintf(`{"error": "%s"}`, err)))
+		return
+	}
+
+	res := make([]Vector3, len(req))
+
+	for i, point := range req {
+		in := FromWowCoords(Vector3ToVec3(point))
+		closest, _ := n.GetClosestPoint(in)
+		res[i] = Vec3ToVector3(ToWowCoords(closest))
+	}
+
+	json.NewEncoder(w).Encode(res)
 }
 
 func NewNav(path, mapId string) *Nav {
@@ -136,37 +164,88 @@ func NewNav(path, mapId string) *Nav {
 	}
 }
 
-func (n *Nav) GetPath(start, end d3.Vec3) []d3.Vec3 {
-	status, startRef, _ := n.query.FindNearestPoly(FromWowCoords(start), n.extents, n.filter)
+func (n *Nav) GetClosestPoint(in d3.Vec3) (d3.Vec3, detour.PolyRef) {
+	status, poly, point := n.query.FindNearestPoly(in, n.extents, n.filter)
+	checkStatus(status)
+	if !n.query.AttachedNavMesh().IsValidPolyRef(poly) {
+		check(fmt.Errorf("not a valid poly ref"))
+	}
+
+	return point, poly
+}
+
+// TODO
+func (n *Nav) GetSmoothPath(start, end d3.Vec3) []d3.Vec3 {
+	path := n.GetStraightPath(start, end)
+	if len(path) == 0 {
+		return []d3.Vec3{}
+	}
+
+	smoothPath := make([]d3.Vec3, 0)
+
+	for i := 0; i < len(path)-1; i++ {
+		current := path[i]
+		next := path[i+1]
+
+		smoothPath = append(smoothPath, current)
+
+		for {
+			iter := current.Lerp(next, 1)
+			smoothPath = append(smoothPath, iter)
+
+			if iter.Dist(end) < 0.01 {
+				break
+			}
+		}
+
+	}
+
+	return smoothPath
+}
+
+func (n *Nav) GetStraightPath(start, end d3.Vec3) []d3.Vec3 {
+	path := n.GetPath(start, end)
+	if len(path) == 0 {
+		return []d3.Vec3{}
+	}
+
+	spath := make([]d3.Vec3, maxPolys)
+	for i := range spath {
+		spath[i] = d3.NewVec3()
+	}
+
+	count, status := n.query.FindStraightPath(start, end, path, spath, nil, nil, int32(detour.StraightPathAreaCrossings&detour.StraightPathAllCrossings))
+	checkStatus(status)
+
+	return spath[:count]
+}
+
+func (n *Nav) GetPath(start, end d3.Vec3) []detour.PolyRef {
+	// Get Start Poly
+	status, startRef, _ := n.query.FindNearestPoly(start, n.extents, n.filter)
 	checkStatus(status)
 	n.query.AttachedNavMesh()
 	if !n.query.AttachedNavMesh().IsValidPolyRef(startRef) {
 		check(fmt.Errorf("not a valid poly ref"))
 	}
 
-	status, endRef, _ := n.query.FindNearestPoly(FromWowCoords(end), n.extents, n.filter)
+	// Get End Poly
+	status, endRef, _ := n.query.FindNearestPoly(end, n.extents, n.filter)
 	checkStatus(status)
 	if !n.query.AttachedNavMesh().IsValidPolyRef(startRef) {
 		check(fmt.Errorf("not a valid poly ref"))
 	}
 
-	path := make([]detour.PolyRef, 256)
-	spath := make([]d3.Vec3, 256)
-	for i := range spath {
-		spath[i] = d3.NewVec3()
-	}
+	path := make([]detour.PolyRef, maxPolys)
 
+	// Get Path
 	count, status := n.query.FindPath(startRef, endRef, start, end, n.filter, path[:])
 	checkStatus(status)
-
-	count, status = n.query.FindStraightPath(start, end, path[:count], spath[:], nil, nil, int32(detour.StraightPathAreaCrossings&detour.StraightPathAllCrossings))
-	checkStatus(status)
-
-	for i := range spath[:count] {
-		spath[i] = ToWowCoords(spath[i])
+	if count == 0 {
+		return []detour.PolyRef{}
 	}
 
-	return spath[:count]
+	return path[:count]
 }
 
 func loadMap(path, mapId string) *detour.NavMesh {
